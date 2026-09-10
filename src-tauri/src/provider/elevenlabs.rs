@@ -21,6 +21,15 @@ pub struct ElevenLabsProvider {
     pcm_denied: std::sync::atomic::AtomicBool,
 }
 
+// Input encoding for STS uploads.
+// `pcm_s16le_16` = raw 16-bit LE mono 16kHz PCM with file_format=pcm_s16le_16 —
+// documented by ElevenLabs as LOWER LATENCY than passing an encoded waveform
+// (no WAV/MP3 decode step server-side). Falls back to WAV 48kHz when disabled.
+// NOTE: ElevenLabs has NO public WebSocket endpoint for speech-to-speech yet —
+// their stream-input WS is Text-to-Speech only. When one ships, this provider is
+// the swap point (VoiceProvider::convert_stream stays the engine interface).
+const LOW_LATENCY_PCM16_INPUT: bool = true;
+
 #[derive(Deserialize)]
 struct VoiceListResponse {
     voices: Vec<ElevenLabsVoice>,
@@ -86,9 +95,17 @@ impl VoiceProvider for ElevenLabsProvider {
     /// Streams MP3 frames to `tx` as HTTP response bytes arrive.
     // ponytail: HTTP per utterance. True realtime needs ElevenLabs WebSocket STS when available.
     async fn convert_stream(&self, audio: Vec<f32>, tx: mpsc::Sender<Vec<f32>>) -> Result<()> {
-        // Send WAV 48kHz — higher quality input than 16kHz PCM.
-        // EL gets full frequency content → better voice conversion.
-        let wav_bytes = pcm_f32_to_wav(&audio, 48_000, 1);
+        // Input encoding: raw 16kHz PCM S16LE (lower latency, documented) or WAV 48kHz.
+        let (audio_bytes, mime, file_format) = if LOW_LATENCY_PCM16_INPUT {
+            let mono_16k = resample_fft(audio.clone(), 48_000, 16_000)?;
+            let pcm16: Vec<u8> = mono_16k
+                .iter()
+                .flat_map(|&s| ((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes())
+                .collect();
+            (pcm16, "application/octet-stream", "pcm_s16le_16")
+        } else {
+            (pcm_f32_to_wav(&audio, 48_000, 1), "audio/wav", "other")
+        };
 
         // Request PCM first (best quality). Some account tiers get HTTP 403 on pcm_44100
         // (Pro-tier only); on denial we flip pcm_denied and retry with mp3_44100_128,
@@ -117,11 +134,12 @@ impl VoiceProvider for ElevenLabsProvider {
             Ok(multipart::Form::new()
                 .part(
                     "audio",
-                    multipart::Part::bytes(wav_bytes.clone())
-                        .file_name("audio.wav")
-                        .mime_str("audio/wav")?,
+                    multipart::Part::bytes(audio_bytes.clone())
+                        .file_name("audio.pcm")
+                        .mime_str(mime)?,
                 )
                 .text("model_id", "eleven_multilingual_sts_v2")
+                .text("file_format", file_format)
                 .text("voice_settings", voice_settings.clone()))
         };
 
