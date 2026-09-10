@@ -1,0 +1,9 @@
+{
+  "scanned": "2026-09-06",
+  "font_stack": "Inter — raw string in App.css :root (not @fontsource / next-font)",
+  "palette": "none — stock Tailwind colors only",
+  "motion": "motion-cut (no framer-motion / gsap / lenis)",
+  "spacing": "Tailwind defaults",
+  "framework": "React 19 + Vite 8 + Tailwind v4 (@tailwindcss/vite) + Tauri v2",
+  "window": "480x640px fixed, resizable: false (macOS desktop)"
+}
